@@ -1,26 +1,21 @@
 # Library Management System
 
-A JavaFX desktop library app built with Java 25+ and Maven. It also includes an optional standalone browser demo in [index.html](index.html).
+A desktop Library Management System with a JavaFX frontend, separate Java backend, and separate file-backed database layer. The frontend uses JavaFX controls; no HTML or CSS frontend files are included.
 
-## Run the JavaFX app
+## Folder layout
 
-Install JDK 25 or newer and Maven, clone this repository, then run from the repository root:
+- frontend/ — JavaFX screens and user interaction
+- backend/ — library rules, accounts, books, and circulation models
+- database/ — local persistence and initial sample data
 
-```sh
-mvn javafx:run
-```
+## Run
 
-The JavaFX source is `LibraryManagementSystem.java`; Maven configures that root-level source file and packages `styles.css` as the app stylesheet.
+Install JDK 25+ and Maven. From the repository root run: mvn javafx:run
 
-## Included features
-
-- Admin, student, and faculty sign-in and registration
-- Book catalog search and administration
-- Borrowing, returns, due dates, fines, and transaction history
-- Local file persistence
+The first launch creates .library-data/library-data.ser and seeds sample books and accounts.
 
 ## Demo accounts
 
-- Admin: `admin@library.com` / `admin123`
-- Student: `aarav@college.com` / `student123`
-- Faculty: `neha@college.com` / `faculty123`
+- Admin: admin@library.com / admin123
+- Student: aarav@college.com / student123
+- Faculty: neha@college.com / faculty123

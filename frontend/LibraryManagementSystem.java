@@ -1,6 +1,11 @@
-package library;
+package library.frontend;
 
 import javafx.application.Application;
+import library.backend.Book;
+import library.backend.Loan;
+import library.backend.User;
+import library.backend.LibraryService;
+import library.database.LibraryDatabase;
 import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.collections.FXCollections;
@@ -22,8 +27,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 public class LibraryManagementSystem extends Application {
-    private static final String DATA_FILE = "library-data.ser";
-    private final Store store = Store.load();
+    private final LibraryService service = new LibraryService(LibraryDatabase.load());
     private Stage stage;
     private User currentUser;
     private BorderPane dashboard;
@@ -69,7 +73,7 @@ public class LibraryManagementSystem extends Application {
         form.getChildren().addAll(eyebrow, welcome, sub, fieldLabel("Email address"), email,
                 fieldLabel("Password"), password, fieldLabel("Sign in as"), role, login, register, demo);
         login.setOnAction(e -> {
-            User found = store.authenticate(email.getText().trim(), password.getText(), role.getValue());
+            User found = service.authenticate(email.getText().trim(), password.getText(), role.getValue());
             if (found == null) alert("Login failed", "Email, password, or account type is incorrect.");
             else { currentUser = found; showDashboard(); }
         });
@@ -108,13 +112,13 @@ public class LibraryManagementSystem extends Application {
         if (!cleanedEmail.contains("@") || password.getText().length() < 6) {
             alert("Check your details", "Enter a valid email and a password with at least 6 characters."); return;
         }
-        if (store.users.stream().anyMatch(u -> u.email.equalsIgnoreCase(cleanedEmail))) {
+        if (service.emailExists(cleanedEmail)) {
             alert("Email already registered", "Use a different email address."); return;
         }
-        User user = new User(store.nextUserId(), name.getText().trim(), cleanedEmail, password.getText(), role.getValue(), department.getText().trim());
-        user.memberCode = memberId.getText().trim(); user.course = course.getText().trim();
-        user.semester = semester.getText().trim(); user.designation = designation.getText().trim();
-        store.users.add(user); store.save();
+        User user = service.register(name.getText().trim(), cleanedEmail, password.getText(), role.getValue(),
+                memberId.getText().trim(), department.getText().trim(), course.getText().trim(),
+                semester.getText().trim(), designation.getText().trim());
+        if (user == null) { alert("Email already registered", "Use a different email address."); return; }
         alert("Registration complete", "Your account is ready. Sign in with your new credentials.");
     }
 
@@ -137,7 +141,7 @@ public class LibraryManagementSystem extends Application {
             button.setOnAction(e -> renderPage(page)); side.getChildren().add(button);
         }
         Region push = new Region(); VBox.setVgrow(push, Priority.ALWAYS);
-        Label note = new Label("A shared space for curious minds.\n\n" + store.books.size() + " titles in the collection");
+        Label note = new Label("A shared space for curious minds.\n\n" + service.books.size() + " titles in the collection");
         note.getStyleClass().add("side-note"); side.getChildren().addAll(push, note); return side;
     }
 
@@ -165,15 +169,15 @@ public class LibraryManagementSystem extends Application {
         VBox welcome = new VBox(5, new Label("Good to see you, " + currentUser.name.split(" ")[0] + "."),
                 new Label(currentUser.role.equals("Admin") ? "Keep the collection organized and your members supported." : "Find something worth getting lost in today."));
         welcome.getStyleClass().add("welcome-banner");
-        int copies = store.books.stream().mapToInt(b -> b.total).sum();
-        int available = store.books.stream().mapToInt(b -> b.available).sum();
-        int active = (int) store.loans.stream().filter(l -> !l.returned).count();
-        HBox stats = new HBox(14, statCard("Book titles", store.books.size()), statCard("Total copies", copies),
+        int copies = service.books.stream().mapToInt(b -> b.total).sum();
+        int available = service.books.stream().mapToInt(b -> b.available).sum();
+        int active = (int) service.loans.stream().filter(l -> !l.returned).count();
+        HBox stats = new HBox(14, statCard("Book titles", service.books.size()), statCard("Total copies", copies),
                 statCard("Available now", available), statCard(currentUser.role.equals("Admin") ? "Active loans" : "My active loans", currentUser.role.equals("Admin") ? active : activeLoans(currentUser)));
         for (Node node : stats.getChildren()) HBox.setHgrow(node, Priority.ALWAYS);
         VBox snapshot = card(); snapshot.getChildren().addAll(sectionTitle(currentUser.role.equals("Admin") ? "Collection snapshot" : "Your current loans"),
                 new Label(currentUser.role.equals("Admin") ? "Recently added titles from the collection." : "Books currently checked out to your account."));
-        if (currentUser.role.equals("Admin")) snapshot.getChildren().add(bookTableView(store.books.subList(Math.max(0, store.books.size() - 5), store.books.size())));
+        if (currentUser.role.equals("Admin")) snapshot.getChildren().add(bookTableView(service.books.subList(Math.max(0, service.books.size() - 5), service.books.size())));
         else snapshot.getChildren().add(loanTableView(activeLoansFor(currentUser)));
         body.getChildren().addAll(welcome, stats, snapshot); return body;
     }
@@ -211,7 +215,7 @@ public class LibraryManagementSystem extends Application {
 
     private List<Book> filteredBooks() {
         String query = bookSearch == null ? "" : bookSearch.getText().trim().toLowerCase(Locale.ROOT);
-        return store.books.stream().filter(b -> query.isBlank() || (b.id + " " + b.title + " " + b.author + " " + b.category).toLowerCase(Locale.ROOT).contains(query)).toList();
+        return service.books.stream().filter(b -> query.isBlank() || (b.id + " " + b.title + " " + b.author + " " + b.category).toLowerCase(Locale.ROOT).contains(query)).toList();
     }
 
     private void refreshBookTable() { if (bookTable != null) bookTable.setItems(FXCollections.observableArrayList(filteredBooks())); }
@@ -231,7 +235,7 @@ public class LibraryManagementSystem extends Application {
         TableColumn<Loan, String> issued = new TableColumn<>("Issued"); issued.setCellValueFactory(c -> new ReadOnlyStringWrapper(c.getValue().issueDate.toString()));
         TableColumn<Loan, String> due = new TableColumn<>("Due date"); due.setCellValueFactory(c -> new ReadOnlyStringWrapper(c.getValue().dueDate.toString()));
         TableColumn<Loan, String> status = new TableColumn<>("Status"); status.setCellValueFactory(c -> new ReadOnlyStringWrapper(c.getValue().returned ? "Returned" : "Issued"));
-        TableColumn<Loan, Integer> fine = new TableColumn<>("Fine (₹)"); fine.setCellValueFactory(c -> new ReadOnlyObjectWrapper<>(c.getValue().fine(store)));
+        TableColumn<Loan, Integer> fine = new TableColumn<>("Fine (₹)"); fine.setCellValueFactory(c -> new ReadOnlyObjectWrapper<>(service.fine(c.getValue())));
         table.getColumns().addAll(member, book, issued, due, status, fine); table.setItems(FXCollections.observableArrayList(loans));
         table.setPlaceholder(new Label("No loans to show.")); table.setPrefHeight(360); return table;
     }
@@ -239,13 +243,13 @@ public class LibraryManagementSystem extends Application {
     private Node historyPage(boolean allMembers) {
         VBox panel = card(); panel.getChildren().addAll(sectionTitle(allMembers ? "All transactions" : "Borrowing history"),
                 new Label(allMembers ? "Circulation activity across the library." : "Your past and active loans, with calculated late fees."));
-        List<Loan> rows = allMembers ? store.loans : store.loans.stream().filter(l -> l.userId.equals(currentUser.id)).toList();
+        List<Loan> rows = allMembers ? service.loans : service.loans.stream().filter(l -> l.userId.equals(currentUser.id)).toList();
         panel.getChildren().add(loanTableView(rows)); return pageWith(panel);
     }
 
     private Node membersPage() {
-        VBox panel = card(); panel.getChildren().addAll(sectionTitle("Library members"), new Label(store.users.size() + " registered accounts"));
-        TableView<User> table = new TableView<>(FXCollections.observableArrayList(store.users)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        VBox panel = card(); panel.getChildren().addAll(sectionTitle("Library members"), new Label(service.users.size() + " registered accounts"));
+        TableView<User> table = new TableView<>(FXCollections.observableArrayList(service.users)); table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
         TableColumn<User, String> name = new TableColumn<>("Name"); name.setCellValueFactory(c -> new ReadOnlyStringWrapper(c.getValue().name));
         TableColumn<User, String> email = new TableColumn<>("Email"); email.setCellValueFactory(c -> new ReadOnlyStringWrapper(c.getValue().email));
         TableColumn<User, String> role = new TableColumn<>("Role"); role.setCellValueFactory(c -> new ReadOnlyStringWrapper(c.getValue().role));
@@ -262,46 +266,41 @@ public class LibraryManagementSystem extends Application {
         addFormRow(grid, 2, "Category", category); addFormRow(grid, 3, "Copies", copies); dialog.getDialogPane().setContent(grid);
         if (dialog.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
         if (title.getText().isBlank() || author.getText().isBlank() || category.getText().isBlank()) { alert("Missing details", "Enter a title, author, and category."); return; }
-        int count = copies.getValue(); store.books.add(new Book(store.nextBookId(), title.getText().trim(), author.getText().trim(), category.getText().trim(), count, count));
-        store.save(); renderPage("Books");
+        int count = copies.getValue(); service.addBook(title.getText().trim(), author.getText().trim(), category.getText().trim(), count);
+        renderPage("Books");
     }
 
     private void deleteBook(Book book) {
         if (book == null) { alert("Select a book", "Choose a row before deleting a title."); return; }
-        if (store.loans.stream().anyMatch(l -> l.bookId.equals(book.id) && !l.returned)) { alert("Book is currently borrowed", "Return all active copies before deleting this title."); return; }
-        if (confirm("Delete book", "Delete ‘" + book.title + "’ from the collection?")) { store.books.remove(book); store.save(); renderPage("Books"); }
+        if (service.hasActiveLoans(book)) { alert("Book is currently borrowed", "Return all active copies before deleting this title."); return; }
+        if (confirm("Delete book", "Delete ‘" + book.title + "’ from the collection?")) { service.deleteBook(book); renderPage("Books"); }
     }
 
     private void issueBook(Book book) {
         if (book == null) { alert("Select a book", "Choose a book from the catalog first."); return; }
         if (book.available < 1) { alert("No copies available", "This title is currently checked out."); return; }
         int limit = currentUser.role.equals("Faculty") ? 5 : 3;
-        if (activeLoans(currentUser) >= limit) { alert("Borrowing limit reached", "Your limit is " + limit + " active books."); return; }
-        if (store.loans.stream().anyMatch(l -> l.userId.equals(currentUser.id) && l.bookId.equals(book.id) && !l.returned)) {
-            alert("Already borrowed", "You already have an active loan for this title."); return;
-        }
-        LocalDate today = LocalDate.now(); int days = currentUser.role.equals("Faculty") ? 30 : 14;
-        store.loans.add(new Loan(store.nextLoanId(), currentUser.id, book.id, today, today.plusDays(days))); book.available--; store.save();
-        alert("Book borrowed", "Due date: " + today.plusDays(days)); renderPage("Books");
+        if (service.activeLoans(currentUser) >= limit) { alert("Borrowing limit reached", "Your limit is " + limit + " active books."); return; }
+        if (service.activeLoan(currentUser, book) != null) { alert("Already borrowed", "You already have an active loan for this title."); return; }
+        Loan loan = service.borrow(currentUser, book);
+        alert("Book borrowed", "Due date: " + loan.dueDate); renderPage("Books");
     }
 
     private void returnSelectedBook(Book book) {
         if (book == null) { alert("Select a book", "Choose a title from the catalog first."); return; }
-        Loan loan = store.loans.stream().filter(l -> l.userId.equals(currentUser.id) && l.bookId.equals(book.id) && !l.returned).findFirst().orElse(null);
-        returnLoan(loan);
+        returnLoan(service.activeLoan(currentUser, book));
     }
 
     private void returnLoan(Loan loan) {
         if (loan == null) { alert("No active loan", "There is no active loan selected for your account."); return; }
-        int fine = loan.fine(store); loan.returned = true; loan.returnDate = LocalDate.now();
-        Book book = store.book(loan.bookId); if (book != null) book.available = Math.min(book.total, book.available + 1);
-        store.save(); alert("Book returned", "Fine: ₹" + fine); renderPage(currentPage);
+        int fine = service.returnLoan(loan);
+        alert("Book returned", "Fine: ₹" + fine); renderPage(currentPage);
     }
 
-    private int activeLoans(User user) { return (int) store.loans.stream().filter(l -> l.userId.equals(user.id) && !l.returned).count(); }
-    private List<Loan> activeLoansFor(User user) { return store.loans.stream().filter(l -> l.userId.equals(user.id) && !l.returned).toList(); }
-    private String bookTitle(String id) { Book book = store.book(id); return book == null ? id : book.title; }
-    private String userName(String id) { User user = store.user(id); return user == null ? id : user.name; }
+    private int activeLoans(User user) { return (int) service.loans.stream().filter(l -> l.userId.equals(user.id) && !l.returned).count(); }
+    private List<Loan> activeLoansFor(User user) { return service.loans.stream().filter(l -> l.userId.equals(user.id) && !l.returned).toList(); }
+    private String bookTitle(String id) { Book book = service.book(id); return book == null ? id : book.title; }
+    private String userName(String id) { User user = service.user(id); return user == null ? id : user.name; }
     private VBox contentBody() { VBox body = new VBox(18); body.getStyleClass().add("content-body"); return body; }
     private VBox pageWith(Node content) { VBox body = contentBody(); body.getChildren().add(content); return body; }
     private VBox card() { VBox card = new VBox(14); card.getStyleClass().add("card"); return card; }
@@ -331,8 +330,29 @@ public class LibraryManagementSystem extends Application {
         return switch (page) { case "Overview" -> "◫"; case "Books" -> "▤"; case "My Loans" -> "↗"; case "History" -> "◷"; case "Members" -> "♙"; default -> "⇄"; };
     }
     private void applyStyles(Scene scene) {
-        scene.getRoot().setStyle("-fx-font-family: 'Segoe UI', 'Arial'; -fx-font-size: 14px; -fx-background-color: #f5f0e5;");
-        var css = getClass().getResource("/styles.css"); if (css != null) scene.getStylesheets().add(css.toExternalForm());
+        scene.getRoot().setStyle("-fx-background-color: #f4f6f5; -fx-font-family: 'Segoe UI'; -fx-font-size: 14px;");
+        styleNode(scene.getRoot());
+    }
+    private void styleNode(Node node) {
+        var classes = node.getStyleClass();
+        if (node instanceof Region region) {
+            if (classes.contains("sidebar") || classes.contains("login-brand")) region.setStyle("-fx-background-color: #173c35; -fx-padding: 24;");
+            else if (classes.contains("topbar") || classes.contains("card") || classes.contains("stat-card") || classes.contains("login-card")) region.setStyle("-fx-background-color: white; -fx-padding: 20; -fx-background-radius: 12; -fx-border-color: #e4e9e6; -fx-border-radius: 12;");
+            else if (classes.contains("content-body")) region.setStyle("-fx-padding: 24;");
+            else if (classes.contains("welcome-banner")) region.setStyle("-fx-background-color: #e2eee9; -fx-padding: 22; -fx-background-radius: 12;");
+        }
+        if (node instanceof Label label) {
+            if (classes.contains("page-title") || classes.contains("section-title") || classes.contains("stat-value")) label.setStyle("-fx-font-size: 20px; -fx-font-weight: bold; -fx-text-fill: #173c35;");
+            else if (classes.contains("muted") || classes.contains("field-label") || classes.contains("eyebrow")) label.setStyle("-fx-text-fill: #64746e;");
+        }
+        if (node instanceof Button button) {
+            if (classes.contains("primary-button")) button.setStyle("-fx-background-color: #1f6b59; -fx-text-fill: white; -fx-background-radius: 7; -fx-padding: 10 16;");
+            else if (classes.contains("danger-button")) button.setStyle("-fx-background-color: #a83c3c; -fx-text-fill: white; -fx-background-radius: 7; -fx-padding: 10 16;");
+            else if (classes.contains("secondary-button")) button.setStyle("-fx-background-color: #e8eeeb; -fx-text-fill: #23483e; -fx-background-radius: 7; -fx-padding: 10 16;");
+            else if (classes.contains("nav-button")) button.setStyle("-fx-background-color: transparent; -fx-text-fill: white; -fx-alignment: CENTER_LEFT; -fx-padding: 10 12;");
+        }
+        if (node instanceof Pane pane) for (Node child : pane.getChildren()) styleNode(child);
+        else if (node instanceof ScrollPane scroll && scroll.getContent() != null) styleNode(scroll.getContent());
     }
     private void alert(String title, String message) {
         Alert alert = new Alert(Alert.AlertType.INFORMATION, message, ButtonType.OK); alert.initOwner(stage);
@@ -345,95 +365,4 @@ public class LibraryManagementSystem extends Application {
 
     public static void main(String[] args) { launch(args); }
 
-    private static final class Store implements Serializable {
-        private static final long serialVersionUID = 1L;
-        private final ArrayList<User> users = new ArrayList<>();
-        private final ArrayList<Book> books = new ArrayList<>();
-        private final ArrayList<Loan> loans = new ArrayList<>();
-        private int userCounter = 6, bookCounter = 1, loanCounter = 1;
-        private User user(String id) { return users.stream().filter(u -> u.id.equals(id)).findFirst().orElse(null); }
-        private Book book(String id) { return books.stream().filter(b -> b.id.equals(id)).findFirst().orElse(null); }
-        private String nextUserId() { return String.format("U%03d", userCounter++); }
-        private String nextBookId() { return String.format("B%03d", bookCounter++); }
-        private String nextLoanId() { return String.format("L%03d", loanCounter++); }
-        private User authenticate(String email, String password, String role) {
-            if (role == null) return null;
-            return users.stream().filter(u -> u.email.equalsIgnoreCase(email) && u.password.equals(password) && u.role.equals(role)).findFirst().orElse(null);
-        }
-        private void save() {
-            try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(DATA_FILE))) { out.writeObject(this); }
-            catch (IOException ex) { new Alert(Alert.AlertType.ERROR, "Could not save library data: " + ex.getMessage()).showAndWait(); }
-        }
-        private static Store load() {
-            try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(DATA_FILE))) { return (Store) in.readObject(); }
-            catch (Exception ignored) { return seed(); }
-        }
-        private static Store seed() {
-            Store s = new Store();
-            s.users.add(new User("U000", "Library Admin", "admin@library.com", "admin123", "Admin", "Library"));
-            User aarav = new User("U001", "Aarav Sharma", "aarav@college.com", "student123", "Student", "Computer Science"); aarav.memberCode = "CS202501"; aarav.course = "B.Tech CSE"; aarav.semester = "3"; s.users.add(aarav);
-            User meera = new User("U002", "Meera Verma", "meera@college.com", "student123", "Student", "Electronics"); meera.memberCode = "EC202502"; meera.course = "B.Tech ECE"; meera.semester = "3"; s.users.add(meera);
-            User kabir = new User("U003", "Kabir Singh", "kabir@college.com", "student123", "Student", "Computer Science"); kabir.memberCode = "CS202503"; kabir.course = "B.Tech CSE"; kabir.semester = "3"; s.users.add(kabir);
-            User neha = new User("U004", "Dr. Neha Kapoor", "neha@college.com", "faculty123", "Faculty", "Computer Science"); neha.memberCode = "F101"; neha.designation = "Associate Professor"; s.users.add(neha);
-            User rahul = new User("U005", "Dr. Rahul Mehta", "rahul@college.com", "faculty123", "Faculty", "Mathematics"); rahul.memberCode = "F102"; rahul.designation = "Professor"; s.users.add(rahul);
-            String[][] rows = {
-                    {"The Alchemist", "Paulo Coelho", "Fiction", "5"}, {"Atomic Habits", "James Clear", "Self Help", "4"},
-                    {"Clean Code", "Robert C. Martin", "Programming", "3"}, {"Harry Potter and the Philosopher's Stone", "J. K. Rowling", "Fantasy", "4"},
-                    {"Introduction to Algorithms", "Cormen et al.", "Computer Science", "3"}, {"Wings of Fire", "A. P. J. Abdul Kalam", "Biography", "5"},
-                    {"Rich Dad Poor Dad", "Robert Kiyosaki", "Finance", "4"}, {"The Psychology of Money", "Morgan Housel", "Finance", "3"},
-                    {"Pride and Prejudice", "Jane Austen", "Classic", "3"}, {"1984", "George Orwell", "Dystopian", "3"},
-                    {"The Hobbit", "J. R. R. Tolkien", "Fantasy", "3"}, {"Python Crash Course", "Eric Matthes", "Programming", "3"},
-                    {"Let Us C", "Yashavant Kanetkar", "Programming", "4"}, {"Data Structures and Algorithms", "Narasimha Karumanchi", "Computer Science", "3"},
-                    {"Operating System Concepts", "Silberschatz et al.", "Computer Science", "3"}, {"Computer Networks", "Andrew S. Tanenbaum", "Computer Science", "3"},
-                    {"The Great Gatsby", "F. Scott Fitzgerald", "Classic", "3"}, {"Sapiens", "Yuval Noah Harari", "History", "3"},
-                    {"Ikigai", "Hector Garcia", "Self Help", "3"}, {"Think Like a Monk", "Jay Shetty", "Self Help", "3"}
-            };
-            for (String[] row : rows) { int n = Integer.parseInt(row[3]); s.books.add(new Book(s.nextBookId(), row[0], row[1], row[2], n, n)); }
-            LocalDate today = LocalDate.now();
-            s.addSeedLoan("U001", "B002", today.minusDays(5), today.plusDays(9), false, null);
-            s.addSeedLoan("U002", "B001", today.minusDays(3), today.plusDays(11), false, null);
-            s.addSeedLoan("U003", "B003", today.minusDays(13), today.minusDays(1), false, null);
-            s.addSeedLoan("U004", "B015", today.minusDays(10), today.plusDays(20), false, null);
-            s.addSeedLoan("U001", "B006", today.minusDays(32), today.minusDays(18), true, today.minusDays(17));
-            s.addSeedLoan("U002", "B009", today.minusDays(35), today.minusDays(21), true, today.minusDays(20));
-            return s;
-        }
-        private void addSeedLoan(String userId, String bookId, LocalDate issued, LocalDate due, boolean returned, LocalDate returnedAt) {
-            Loan loan = new Loan(nextLoanId(), userId, bookId, issued, due); loan.returned = returned; loan.returnDate = returnedAt; loans.add(loan);
-            Book book = book(bookId); if (book != null) book.available = Math.max(0, book.available - 1);
-        }
-    }
-
-    private static final class User implements Serializable {
-        private static final long serialVersionUID = 1L;
-        private final String id, name, email, password, role, department;
-        private String memberCode = "", course = "", semester = "", designation = "";
-        private User(String id, String name, String email, String password, String role, String department) {
-            this.id = id; this.name = name; this.email = email; this.password = password; this.role = role; this.department = department;
-        }
-    }
-    private static final class Book implements Serializable {
-        private static final long serialVersionUID = 1L;
-        private final String id, title, author, category;
-        private int total, available;
-        private Book(String id, String title, String author, String category, int total, int available) {
-            this.id = id; this.title = title; this.author = author; this.category = category; this.total = total; this.available = available;
-        }
-    }
-    private static final class Loan implements Serializable {
-        private static final long serialVersionUID = 1L;
-        private final String id, userId, bookId;
-        private final LocalDate issueDate, dueDate;
-        private LocalDate returnDate;
-        private boolean returned;
-        private Loan(String id, String userId, String bookId, LocalDate issueDate, LocalDate dueDate) {
-            this.id = id; this.userId = userId; this.bookId = bookId; this.issueDate = issueDate; this.dueDate = dueDate;
-        }
-        private int fine(Store store) {
-            User user = store.user(userId);
-            if (user != null && user.role.equals("Faculty")) return 0;
-            LocalDate end = returned && returnDate != null ? returnDate : LocalDate.now();
-            return (int) Math.max(0, ChronoUnit.DAYS.between(dueDate, end)) * 2;
-        }
-    }
 }
